@@ -28,9 +28,9 @@ Pipeline:
 """
 
 import html as html_module
-import random
 import re
 import sys
+import uuid
 from urllib.parse import urlparse
 
 import markdownify
@@ -94,8 +94,8 @@ def strip_scripts_and_styles(html: str) -> str:
     This is done with a regex pass before any DOM parsing so that JS/CSS
     content cannot accidentally end up in the final Markdown.
     """
-    html = re.sub(r'<style[\s\S]*?</style>', '', html, flags=re.IGNORECASE)
-    html = re.sub(r'<script[\s\S]*?</script>', '', html, flags=re.IGNORECASE)
+    html = re.sub(r'<style[\s\S]*?</style\s*>', '', html, flags=re.IGNORECASE)
+    html = re.sub(r'<script[\s\S]*?</script\s*>', '', html, flags=re.IGNORECASE)
     return html
 
 
@@ -104,7 +104,7 @@ def strip_scripts_and_styles(html: str) -> str:
 # ===========================================================================
 
 # HTML elements that are rarely part of the article body
-_NOISE_TAGS = {"nav", "footer", "aside", "button", "header", "script", "style"}
+_NOISE_TAGS = ["nav", "footer", "aside", "button", "header", "script", "style"]
 
 
 def clean_html(soup: BeautifulSoup) -> BeautifulSoup:
@@ -293,7 +293,7 @@ def format_codeblocks(html: str, replacements: list) -> str:
         text = html_module.unescape(text)
 
         markdown = f"```{lang}\n{text}\n```\n"
-        placeholder = f"urltomarkdowncodeblockplaceholder{len(replacements)}{random.random()}"
+        placeholder = f"urltomarkdowncodeblockplaceholder{len(replacements)}{uuid.uuid4().hex}"
         replacements.append({"placeholder": placeholder, "replacement": markdown})
         return f"<p>{placeholder}</p>"
 
@@ -309,7 +309,7 @@ def format_tables(html: str, replacements: list) -> str:
     def _convert(match: re.Match) -> str:
         table_html = match.group(0)
         markdown = convert_table(table_html)
-        placeholder = f"urltomarkdowntableplaceholder{len(replacements)}{random.random()}"
+        placeholder = f"urltomarkdowntableplaceholder{len(replacements)}{uuid.uuid4().hex}"
         replacements.append({"placeholder": placeholder, "replacement": markdown})
         return f"<p>{placeholder}</p>"
 
@@ -468,7 +468,7 @@ def apply_domain_filters(url: str, markdown: str, ignore_links: bool = False) ->
     # Make relative URLs absolute: [text](/path) → [text](https://host/path)
     if base_address:
         def _make_absolute(m: re.Match) -> str:
-            return f"[{m.group(1)}]({base_address}/{m.group(2)})"
+            return f"[{m.group(1)}]({base_address.rstrip('/')}/{m.group(2)})"
 
         markdown = re.sub(
             r'\[([^\]]*)\]\(\/([^\/][^\)]*)\)',
