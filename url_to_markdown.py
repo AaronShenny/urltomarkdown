@@ -31,7 +31,7 @@ import html as html_module
 import re
 import sys
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import markdownify
 import requests
@@ -94,8 +94,8 @@ def strip_scripts_and_styles(html: str) -> str:
     This is done with a regex pass before any DOM parsing so that JS/CSS
     content cannot accidentally end up in the final Markdown.
     """
-    html = re.sub(r'<style[\s\S]*?</style\s*>', '', html, flags=re.IGNORECASE)
-    html = re.sub(r'<script[\s\S]*?</script\s*>', '', html, flags=re.IGNORECASE)
+    html = re.sub(r'<style[\s\S]*?</style[^>]*>', '', html, flags=re.IGNORECASE)
+    html = re.sub(r'<script[\s\S]*?</script[^>]*>', '', html, flags=re.IGNORECASE)
     return html
 
 
@@ -214,7 +214,7 @@ def convert_table(table_html: str) -> str:
 
     total_width = sum(col_widths)
 
-    if total_width < MAX_TABLE_WIDTH:
+    if total_width <= MAX_TABLE_WIDTH:
         # ── Markdown pipe table ──────────────────────────────────────────────
         # Pad each cell to its column width
         padded = [
@@ -443,7 +443,12 @@ def apply_domain_filters(url: str, markdown: str, ignore_links: bool = False) ->
     """
     parsed = urlparse(url) if url else None
     domain = (parsed.hostname or "") if parsed else ""
-    base_address = f"{parsed.scheme}://{parsed.hostname}" if parsed else ""
+    # Only build base_address when we have a full scheme + hostname
+    base_address = (
+        f"{parsed.scheme}://{parsed.hostname}"
+        if parsed and parsed.scheme and parsed.hostname
+        else ""
+    )
 
     for entry in _DOMAIN_FILTERS:
         if entry["domain"].search(domain):
@@ -468,7 +473,8 @@ def apply_domain_filters(url: str, markdown: str, ignore_links: bool = False) ->
     # Make relative URLs absolute: [text](/path) → [text](https://host/path)
     if base_address:
         def _make_absolute(m: re.Match) -> str:
-            return f"[{m.group(1)}]({base_address.rstrip('/')}/{m.group(2)})"
+            # urljoin handles trailing-slash edge cases correctly
+            return f"[{m.group(1)}]({urljoin(base_address, '/' + m.group(2))})"
 
         markdown = re.sub(
             r'\[([^\]]*)\]\(\/([^\/][^\)]*)\)',
@@ -540,13 +546,16 @@ def _process_content_section(section: dict, dev_references: dict, ignore_links: 
 
         elif content_type == "unorderedList":
             for list_item in content.get("items", []):
-                text += "* " + _process_content_section(list_item, dev_references, ignore_links)
+                # rstrip to avoid extra blank lines breaking list continuity
+                text += "* " + _process_content_section(
+                    list_item, dev_references, ignore_links
+                ).rstrip() + "\n"
 
         elif content_type == "orderedList":
             for n, list_item in enumerate(content.get("items", []), start=1):
                 text += f"{n}. " + _process_content_section(
                     list_item, dev_references, ignore_links
-                )
+                ).rstrip() + "\n"
 
         elif content_type == "heading":
             level = content.get("level", 2)
@@ -583,7 +592,7 @@ def _process_sections(sections: list, dev_references: dict, ignore_links: bool) 
             if kind == "hero":
                 text += "# " + section_title + "\n"
             else:
-                text += "## " + section_title
+                text += "## " + section_title + "\n\n"
 
         for section_content in section.get("content", []):
             if section_content.get("type") == "text":
