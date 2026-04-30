@@ -117,8 +117,8 @@ def clean_html(soup: BeautifulSoup) -> BeautifulSoup:
     for tag in soup.find_all(_NOISE_TAGS):
         tag.decompose()
 
-    # Remove noisy wrapper elements by class/id hints, but avoid deleting main
-    # content containers that often hold useful docs/article content.
+    # Remove noisy wrapper elements by class/id hints, but preserve containers
+    # that look like documentation content regions.
     for tag in soup.find_all(True):
         classes = " ".join(tag.get("class", [])).lower()
         elem_id = (tag.get("id") or "").lower()
@@ -129,9 +129,7 @@ def clean_html(soup: BeautifulSoup) -> BeautifulSoup:
             continue
 
         # Preserve likely primary containers.
-        if tag.name in {"main", "article"}:
-            continue
-        if tag.get("role") == "main":
+        if tag.name in {"main", "article"} or tag.get("role") == "main":
             continue
         if tag.find(["h1", "h2", "h3", "pre", "code", "article", "section"]):
             continue
@@ -159,57 +157,34 @@ def extract_main_content(html: str, url: str = "", use_readability: bool = True)
     Returns:
         (content_html: str, title: str)
 
-    Strategy:
-    1. Detect docs-like pages (many headings/code blocks or "docs" in URL).
-    2. For docs pages, prioritize semantic content containers (<main>,
-       <article>, [role="main"]) to preserve structure.
-    3. For article pages, use Readability when available.
-    4. Fallback to the largest meaningful content block.
-    5. Final fallback returns cleaned full HTML.
+    Documentation-first strategy:
+    1. Extract title from <title>.
+    2. Extract semantic main containers (<main>, <article>, <div role="main">).
+    3. If none found, choose largest meaningful <section>/<div> block.
+    4. Final fallback: cleaned full HTML.
     """
     soup = BeautifulSoup(html, "lxml")
     title_tag = soup.find("title")
     title = title_tag.get_text(strip=True) if title_tag else ""
 
-    # Step 1: classify page type so docs keep rich structure.
-    heading_count = len(soup.find_all(["h1", "h2", "h3"]))
-    code_block_count = len(soup.find_all("pre"))
-    is_docs_page = (
-        heading_count > 3
-        or code_block_count > 1
-        or "docs" in (url or "").lower()
-    )
+    # Step 2 & 3: docs-oriented semantic containers, cleaned and returned
+    # directly to preserve structure (headings, sections, and code blocks).
+    for node in soup.select("main, article, div[role='main']"):
+        candidate = BeautifulSoup(str(node), "lxml")
+        clean_html(candidate)
+        return str(candidate), title
 
-    # Step 2: docs-first extraction (do not prefer Readability here).
-    if is_docs_page:
-        for node in soup.select("main, article, div[role='main']"):
-            candidate = BeautifulSoup(str(node), "lxml")
-            clean_html(candidate)
-            candidate_html = str(candidate)
-            if is_content_valid(candidate_html):
-                return candidate_html, title
-
-    # Step 3: article-like extraction with Readability.
-    if (not is_docs_page) and use_readability and HAS_READABILITY:
-        try:
-            doc = ReadabilityDocument(html, url=url)
-            content = doc.summary(html_partial=False)
-            if is_content_valid(content):
-                return content, title
-        except Exception:
-            pass  # Fall through to structural fallbacks
-
-    # Step 4: choose largest meaningful block by visible text length.
+    # Step 4: fallback to largest meaningful <section>/<div> by text size.
     best_html = ""
     best_len = 0
-    for node in soup.find_all(["div", "section", "article"]):
+    for node in soup.find_all(["section", "div"]):
         candidate = BeautifulSoup(str(node), "lxml")
         clean_html(candidate)
         text_len = len(candidate.get_text(" ", strip=True))
         if text_len > best_len:
             best_len = text_len
             best_html = str(candidate)
-    if is_content_valid(best_html):
+    if best_html:
         return best_html, title
 
     # Step 5: final fallback to cleaned full HTML.
