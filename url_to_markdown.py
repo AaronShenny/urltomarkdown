@@ -105,14 +105,50 @@ def strip_scripts_and_styles(html: str) -> str:
 
 # HTML elements that are rarely part of the article body
 _NOISE_TAGS = ["nav", "footer", "aside", "button", "header", "script", "style"]
+_NOISE_HINTS = ("nav", "menu", "sidebar", "footer", "header", "ads", "banner", "cookie")
 
 
 def clean_html(soup: BeautifulSoup) -> BeautifulSoup:
-    """Remove noise elements (nav, footer, aside, buttons, headers, scripts,
-    styles) from *soup* in-place.  Returns the modified soup object."""
+    """Remove common non-content blocks from *soup* in-place.
+
+    Keeps structural content tags such as headings, sections, and code blocks
+    intact, while removing obvious UI chrome and ad/cookie wrappers.
+    """
     for tag in soup.find_all(_NOISE_TAGS):
         tag.decompose()
+
+    # Remove noisy wrapper elements by class/id hints, but preserve containers
+    # that look like documentation content regions.
+    for tag in soup.find_all(True):
+        classes = " ".join(tag.get("class", [])).lower()
+        elem_id = (tag.get("id") or "").lower()
+        marker = f"{classes} {elem_id}"
+        if not marker.strip():
+            continue
+        if not any(hint in marker for hint in _NOISE_HINTS):
+            continue
+
+        # Preserve likely primary containers.
+        if tag.name in {"main", "article"} or tag.get("role") == "main":
+            continue
+        if tag.find(["h1", "h2", "h3", "pre", "code", "article", "section"]):
+            continue
+        tag.decompose()
     return soup
+
+
+def is_content_valid(content: str) -> bool:
+    """Heuristic quality gate for extracted content HTML."""
+    if not content:
+        return False
+    soup = BeautifulSoup(content, "lxml")
+    text = soup.get_text(" ", strip=True)
+    if len(text) <= 300:
+        return False
+    heading_count = len(soup.find_all(["h1", "h2", "h3"]))
+    paragraph_count = len(soup.find_all("p"))
+    code_count = len(soup.find_all(["pre", "code"]))
+    return code_count > 0 or heading_count >= 2 or paragraph_count >= 3
 
 
 def extract_main_content(html: str, url: str = "", use_readability: bool = True) -> tuple:
@@ -121,33 +157,37 @@ def extract_main_content(html: str, url: str = "", use_readability: bool = True)
     Returns:
         (content_html: str, title: str)
 
-    Strategy:
-    1. If *use_readability* is True and readability-lxml is installed, run
-       Mozilla Readability on the page.
-    2. Quality checks: if the extracted text is shorter than
-       MIN_CONTENT_LENGTH characters, fall through to the fallback.
-    3. Fallback: parse the full HTML with BeautifulSoup, strip noise elements,
-       and return the body innerHTML.
+    Documentation-first strategy:
+    1. Extract title from <title>.
+    2. Extract semantic main containers (<main>, <article>, <div role="main">).
+    3. If none found, choose largest meaningful <section>/<div> block.
+    4. Final fallback: cleaned full HTML.
     """
-    # Always extract the <title> from the raw HTML for use as the page title
     soup = BeautifulSoup(html, "lxml")
     title_tag = soup.find("title")
     title = title_tag.get_text(strip=True) if title_tag else ""
 
-    if use_readability and HAS_READABILITY:
-        try:
-            doc = ReadabilityDocument(html, url=url)
-            content = doc.summary(html_partial=False)
+    # Step 2 & 3: docs-oriented semantic containers, cleaned and returned
+    # directly to preserve structure (headings, sections, and code blocks).
+    for node in soup.select("main, article, div[role='main']"):
+        candidate = BeautifulSoup(str(node), "lxml")
+        clean_html(candidate)
+        return str(candidate), title
 
-            # Quality check: if Readability found substantial content, use it
-            content_text = BeautifulSoup(content, "lxml").get_text(strip=True)
-            if len(content_text) >= MIN_CONTENT_LENGTH:
-                return content, title
-            # Otherwise fall through to the fallback below
-        except Exception:
-            pass  # Readability failed; fall through to fallback
+    # Step 4: fallback to largest meaningful <section>/<div> by text size.
+    best_html = ""
+    best_len = 0
+    for node in soup.find_all(["section", "div"]):
+        candidate = BeautifulSoup(str(node), "lxml")
+        clean_html(candidate)
+        text_len = len(candidate.get_text(" ", strip=True))
+        if text_len > best_len:
+            best_len = text_len
+            best_html = str(candidate)
+    if best_html:
+        return best_html, title
 
-    # Fallback: return the cleaned full HTML
+    # Step 5: final fallback to cleaned full HTML.
     clean_html(soup)
     body = soup.find("body")
     fallback_html = str(body) if body else str(soup)
