@@ -114,26 +114,55 @@ def clean_html(soup: BeautifulSoup) -> BeautifulSoup:
     Keeps structural content tags such as headings, sections, and code blocks
     intact, while removing obvious UI chrome and ad/cookie wrappers.
     """
-    for tag in soup.find_all(_NOISE_TAGS):
-        tag.decompose()
-
-    # Remove noisy wrapper elements by class/id hints, but preserve containers
-    # that look like documentation content regions.
     for tag in soup.find_all(True):
-        classes = " ".join(tag.get("class", [])).lower()
-        elem_id = (tag.get("id") or "").lower()
-        marker = f"{classes} {elem_id}"
-        if not marker.strip():
-            continue
-        if not any(hint in marker for hint in _NOISE_HINTS):
-            continue
 
-        # Preserve likely primary containers.
-        if tag.name in {"main", "article"} or tag.get("role") == "main":
-            continue
-        if tag.find(["h1", "h2", "h3", "pre", "code", "article", "section"]):
-            continue
-        tag.decompose()
+      try:
+          class_attr = tag.get("class")
+      except Exception:
+          class_attr = None
+
+      if isinstance(class_attr, list):
+          classes = " ".join(class_attr).lower()
+      elif isinstance(class_attr, str):
+          classes = class_attr.lower()
+      else:
+          classes = ""
+
+      try:
+          elem_id = tag.get("id")
+          elem_id = elem_id.lower() if isinstance(elem_id, str) else ""
+      except Exception:
+          elem_id = ""
+
+      marker = f"{classes} {elem_id}".strip()
+
+      if not marker:
+          continue
+
+      if not any(hint in marker for hint in _NOISE_HINTS):
+          continue
+
+      try:
+          role = tag.get("role")
+      except Exception:
+          role = None
+
+      # Preserve important content
+      if tag.name in {"main", "article"} or role == "main":
+          continue
+
+      try:
+          has_content = tag.find(["h1", "h2", "h3", "pre", "code", "article", "section"])
+      except Exception:
+          has_content = False
+
+      if has_content:
+          continue
+
+      try:
+          tag.decompose()
+      except Exception:
+          continue
     return soup
 
 
@@ -815,24 +844,41 @@ def url_to_markdown(
 # Test block
 # ===========================================================================
 
+# if __name__ == "__main__":
+#     test_url = (
+#         sys.argv[1]
+#         if len(sys.argv) > 1
+#         else "https://en.wikipedia.org/wiki/Python_(programming_language)"
+#     )
+
+#     print(f"Converting: {test_url}")
+#     print("=" * 60)
+
+#     try:
+#         result = url_to_markdown(
+#             test_url,
+#             inline_title=True,
+#             ignore_links=False,
+#             use_readability=True,
+#         )
+#         print(result)
+#     except Exception as exc:
+#         print(f"Error: {exc}", file=sys.stderr)
+#         sys.exit(1)
 if __name__ == "__main__":
-    test_url = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else "https://en.wikipedia.org/wiki/Python_(programming_language)"
-    )
+    # Only accept valid URLs from CLI
+    if len(sys.argv) > 1 and sys.argv[1].startswith("http"):
+        test_url = sys.argv[1]
+    else:
+        test_url = "https://docs.djangoproject.com/en/dev/ref/models/relations/"
 
     print(f"Converting: {test_url}")
     print("=" * 60)
 
     try:
-        result = url_to_markdown(
-            test_url,
-            inline_title=True,
-            ignore_links=False,
-            use_readability=True,
-        )
+        result = url_to_markdown(test_url)
         print(result)
+        with open(result.split("\n")[0][1:].replace(" ","_"),"w") as f:
+          f.write(result)
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
